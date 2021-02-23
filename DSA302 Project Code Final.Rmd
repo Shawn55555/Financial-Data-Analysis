@@ -1,0 +1,987 @@
+---
+title: "DSA Project Code Final"
+author: "There is no Yield Curve"
+date: "11/8/2020"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+############################################# PART 1 #############################################
+
+#Set you working directory if required
+```{r}
+# setwd('C:/Users/Ziyik/Desktop/New Folder')
+```
+
+
+#Load Libraries
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(YieldCurve)
+library(xts)
+library(ustyc)
+library(forecast)
+library(dsa)
+library(lattice)
+library(plot3D)
+library(plot3Drgl)
+library(gridExtra)
+
+theme_set(theme_light()) #do not have to run this if light theme is not preferred
+
+```
+
+#Load Part 1 Data
+```{r}
+ZCBP <- read.table('ZCBP.txt', header = T)
+summary(ZCBP)
+ZCBP <- ZCBP[order(ZCBP$time),]
+head(ZCBP)
+```
+
+
+# 1.1) Plot the bond prices versus their maturities
+```{r}
+ZCBP %>% rename(Time = time, Price = price)
+Maturities <- ZCBP[,1]
+Price <- ZCBP[,2]
+
+ZCBP %>% ggplot(aes(x = Maturities, y = Price)) +
+  geom_point() + #can be geom_lines too
+  ggtitle('Bond Prices versus Maturities') +
+  expand_limits(x = 0, y = 0)
+```
+
+# 1.2) Plot the empirical forward rates as computed in equation (3) versus maturities.
+```{r}
+j <- length(Price)-1
+ForwardRate <- matrix(nrow=j,0)
+TimeInterval <- Maturities[1:j]
+
+GGData <- cbind(TimeInterval, ForwardRate) %>% 
+  as.data.frame()
+
+for(i in 1:j) #The i notation is used here but it essentially refers to j in equation (3)
+{
+ForwardRate[i] <- -(log(Price[i+1])-(log(Price[i])))/(Maturities[i+1]-Maturities[i])
+}
+
+GGData %>% ggplot(aes(x = TimeInterval, y = ForwardRate)) + 
+  geom_point() +
+  ggtitle('Empirical Forward Rates versus Maturities') +
+  labs(x = 'Maturities', y = 'Empirical Forward Rate') +
+  expand_limits(x = 0, y = 0)
+```
+
+# 1.3) Smooth the empirical forward rates using second order and third order polynomials.Superimpose the smoothed curves versus the empirical forward rates.
+
+Smoothen
+```{r}
+SecondOrder <- lm(ForwardRate ~ TimeInterval + I(TimeInterval^2))
+SecondCoef <- SecondOrder$coefficients
+SecondSmoothen <- SecondCoef[1] + SecondCoef[2]*TimeInterval + SecondCoef[3]*TimeInterval^2
+
+ThirdOrder <- lm(ForwardRate ~ TimeInterval + I(TimeInterval^2)+ I(TimeInterval^3))
+ThirdCoef <- ThirdOrder$coefficients
+ThirdSmoothen <- ThirdCoef[1] + ThirdCoef[2]*TimeInterval + ThirdCoef[3]*TimeInterval^2 + ThirdCoef[4]*TimeInterval^3
+```
+
+GGplot
+```{r}
+GGData2 <- cbind(GGData,SecondSmoothen,ThirdSmoothen) %>% 
+  as.data.frame()
+
+GGData2 %>% ggplot(aes(x = TimeInterval, y = ForwardRate)) +
+  geom_point(alpha = 0.8) +
+  geom_line(mapping = aes(y = SecondSmoothen, colour = 'Second_Order'),size = 1.2) +
+  geom_line(mapping = aes(y = ThirdSmoothen, colour = 'Third_Order'), size = 1.2) +
+  ggtitle('Empirical Forward Rates with Fitted Lines') +
+  labs(x = 'Maturities', y = 'Empirical Forward Rate') +
+  theme(legend.position = 'right') +
+  scale_colour_manual(name = "Polynomial Smoothened Curve",
+                      values = c(Second_Order='blue', Third_Order='red'))
+  
+```
+
+# 1.4) Estimate the empirical spot rates of interest using Method 2 for any maturities up to 30 years.
+
+Method 1: Defining t values based on the interval in the dataset. We choose t to be the upper value of each interval
+```{r}
+SpotRate <- NULL
+for(i in 2:j){
+  SpotRate[i] = (1/Maturities[i])*(-(log(0.01*Price[1]))+cumsum((ForwardRate[1:i-1]%*%(Maturities[2:i]-Maturities[1:i-1]))))
+}
+head(SpotRate); tail(SpotRate)
+```
+
+Method 2: Using cut() to split into 116 equal parts and define t values by picking the upper value of each interval
+```{r}
+(Labels = levels(cut(Maturities,breaks=116)))
+DF = cbind(lower = as.numeric(sub("\\((.+),.*", "\\1", Labels)),
+      upper = as.numeric(sub("[^,]*,([^]]*)\\]", "\\1", Labels)))
+TimeCut = DF[,2]
+SpotRate2 <- NULL
+for(i in 2:j){
+  SpotRate2[i] = (1/TimeCut[i])*(-(log(0.01*Price[1]))+cumsum((ForwardRate[1:i-1]%*%(Maturities[2:i]-Maturities[1:i-1])))-(ForwardRate[i-1]*(Maturities[i]-Maturities[i-1]))+ForwardRate[i-1]*((TimeCut[i]-Maturities[i-1])))
+}
+head(SpotRate2); tail(SpotRate2)
+```
+
+Remove all NAs
+```{r}
+SpotRate <- na.omit(SpotRate)
+SpotRate2 <- na.omit(SpotRate2)
+
+head(SpotRate); tail(SpotRate)
+head(SpotRate2); tail(SpotRate2)
+```
+
+# 1.5) Smooth the empirical spot rates using second order and third order polynomials. 
+#      Superimpose the smoothed curves versus the empirical spot rates.
+
+GGplot
+```{r}
+TimeIntervalGG <- TimeInterval[-1]
+GGData2 <- cbind(TimeIntervalGG,SpotRate,SpotRate2) %>% 
+  as.data.frame() %>% 
+  pivot_longer(cols = -TimeIntervalGG,
+               names_to = 'Method',
+               values_to = 'SpotRate')
+
+GGData2 %>% filter(Method == 'SpotRate2') %>% ggplot(aes(x = TimeIntervalGG, y = SpotRate, group = Method, colour = Method)) +
+  geom_point(size = 1) +
+  ggtitle('Empirical Spot Rates against Time') +
+  labs(x = 'Maturities', y = 'Empirical Spot Rate')
+```
+
+Normal Plot
+```{r}
+plot(TimeIntervalGG, SpotRate, main = 'Yield Curve', xlab = 'Maturities', ylab='Empirical Spot rates', col = 'red',type='l')
+plot(TimeIntervalGG, SpotRate2, main = 'Yield Curve (using cut)', xlab = 'Maturities', ylab='Empirical Spot rates', col = 'red',type='l')
+grid()
+```
+
+Smoothen
+```{r}
+# Method 1
+SecondSpot = lm(SpotRate ~ TimeInterval[-1] + I(TimeInterval[-1]^2))
+SecondSpotCoef = SecondSpot$coefficients
+SecondSpotSmooth = SecondSpotCoef[1] + SecondSpotCoef[2]*TimeInterval[-1] + SecondSpotCoef[3]*TimeInterval[-1]^2
+
+ThirdSpot = lm(SpotRate ~ TimeInterval[-1] + I(TimeInterval[-1]^2) + I(TimeInterval[-1]^3))
+ThirdSpotCoef = ThirdSpot$coefficients
+ThirdSpotSmooth = ThirdSpotCoef[1] + ThirdSpotCoef[2]*TimeInterval[-1] + ThirdSpotCoef[3]*TimeInterval[-1]^2 + 
+  ThirdSpotCoef[4]*TimeInterval[-1]^3
+
+# Method 2
+SecondSpot2 = lm(SpotRate2 ~ TimeInterval[-1] + I(TimeInterval[-1]^2))
+SecondSpot2Coef = SecondSpot2$coefficients
+SecondSpot2Smooth = SecondSpot2Coef[1] + SecondSpot2Coef[2]*TimeInterval[-1] + SecondSpot2Coef[3]*TimeInterval[-1]^2
+
+ThirdSpot2 = lm(SpotRate2 ~ TimeInterval[-1] + I(TimeInterval[-1]^2) + I(TimeInterval[-1]^3))
+ThirdSpot2Coef = ThirdSpot2$coefficients
+ThirdSpot2Smooth = ThirdSpot2Coef[1] + ThirdSpot2Coef[2]*TimeInterval[-1] + ThirdSpot2Coef[3]*TimeInterval[-1]^2 + 
+  ThirdSpot2Coef[4]*TimeInterval[-1]^3
+```
+
+Superimpose
+```{r}
+# Method 1
+GGData3 <- cbind(TimeIntervalGG,SpotRate,SecondSpotSmooth,ThirdSpotSmooth) %>% 
+  as.data.frame()
+
+GGData3 %>% ggplot(aes(x = TimeIntervalGG, y = SpotRate)) +
+  geom_point(alpha = 0.8, size = 0.7) +
+  geom_line(mapping = aes(y = SecondSpotSmooth, colour = 'Second_Order'),size = 1) +
+  geom_line(mapping = aes(y = ThirdSpotSmooth, colour = 'Third_Order'), size = 1) +
+  ggtitle('Empirical Spot Rates with Fitted Lines (Method 1)') +
+  labs(x = 'Maturities', y = 'Empirical Spot Rate') +
+  theme(legend.position = 'right') +
+  scale_colour_manual(name = "Polynomial Smoothened Curve",
+                      values = c(Second_Order='blue', Third_Order='red'))
+
+# Method 2
+GGData4 <- cbind(TimeIntervalGG,SpotRate2,SecondSpot2Smooth,ThirdSpot2Smooth) %>% 
+  as.data.frame()
+
+GGData4 %>% ggplot(aes(x = TimeIntervalGG, y = SpotRate2)) +
+  geom_point(alpha = 0.8, size = 0.7) +
+  geom_line(mapping = aes(y = SecondSpot2Smooth, colour = 'Second_Order'),size = 1) +
+  geom_line(mapping = aes(y = ThirdSpot2Smooth, colour = 'Third_Order'), size = 1) +
+  ggtitle('Empirical Spot Rates with Fitted Lines (Using cut())') +
+  labs(x = 'Maturities', y = 'Empirical Spot Rate') +
+  theme(legend.position = 'right') +
+  scale_colour_manual(name = "Polynomial Smoothened Curve",
+                      values = c(Second_Order='blue', Third_Order='red'))
+```
+
+# Part 1.6) Comment on your results (refer to report)
+
+
+
+
+
+
+
+
+
+
+
+
+############################################# PART 2 #############################################
+
+# Load data and stuff TO DELETE
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(YieldCurve)
+library(xts)
+library(ustyc)
+library(forecast)
+library(dsa)
+library(lattice)
+
+theme_set(theme_light()) #do not have to run this if light theme is not preferred
+```
+
+# 2.1) Presenting Data
+```{r}
+ZCBYF86 <- read.csv("ZCBYF86.csv")
+date=as.Date(ZCBYF86$Date,format="%d/%m/%Y")
+ZCBYF86=cbind(date,ZCBYF86[,-1])
+ZCBYF86.xts=xts(ZCBYF86[,2:31],order.by=ZCBYF86[,1])
+head(ZCBYF86.xts)
+dim(ZCBYF86.xts)
+par(mar=c(1,1,1,1))
+
+xyplot.ts(ZCBYF86.xts,scales=list(y=list(relation="same")),ylab="Yield (%)")
+xyplot.ts(ZCBYF86.xts,superpose=TRUE,auto.key=list(columns=6), ylab="Yield (%)")
+```
+
+Defining functions for later. Rewriting Nelson.Siegel() and svensson() functions 
+to retrieve SSR, AIC and BIC. New functions are NSFit() and NSSFit()
+```{r}
+#Use NSFit() and NSSFit() instead
+
+### factorBeta1
+.FactorBeta1 <- function (lambda, maturity) 
+{
+  as.numeric((1 - exp(-lambda * maturity))/(lambda * maturity))
+}
+
+### factorBeta2
+.FactorBeta2 <- function (lambda, maturity) 
+{
+  as.numeric((1 - exp(-lambda * maturity))/(lambda * maturity) - 
+               exp(-lambda * maturity))
+}
+
+### .NS.estimator
+NSestimator <- function(rate, maturity, lambda) 
+{
+  beta <- lm(rate ~ 1 + .FactorBeta1(lambda, maturity) + .FactorBeta2(lambda, 
+                                                                      maturity))
+  betaPar <- coef(beta)
+  NaValues <- na.omit(betaPar)
+  AIC <- AIC(beta)
+  BIC <- BIC(beta)
+  if (length(NaValues) < 3) 
+    betaPar <- c(0, 0, 0)
+  names(betaPar) <- c("beta_0", "beta_1", "beta_2")
+  EstResults <- list(Par = betaPar, Res = resid(beta), AIC = AIC, BIC = BIC)
+  return(EstResults)
+}
+
+### .NS.estimator
+NSFit <- function (rate, maturity) 
+{
+  rate <- try.xts(rate, error = as.matrix)
+  if (ncol(rate) == 1) 
+    rate <- matrix(as.vector(rate), 1, nrow(rate))
+  pillars.number <- length(maturity)
+  lambdaValues <- seq(maturity[1], maturity[pillars.number], 
+                      by = 0.5)
+  FinalResults <- matrix(0, nrow(rate), 7)
+  colnames(FinalResults) <- c("beta_0", "beta_1", 
+                              "beta_2", "lambda","SSR","AIC", "BIC")
+  j <- 1
+  while (j <= nrow(rate)) {
+    InterResults <- matrix(0, length(lambdaValues), 7)
+    colnames(InterResults) <- c("beta0", "beta1", 
+                                "beta2", "lambda", "SSR","AIC", "BIC")
+    for (i in 1:length(lambdaValues)) {
+      lambdaTemp <- optimize(.FactorBeta2, interval = c(0.001, 
+                                                        1), maturity = lambdaValues[i], maximum = TRUE)$maximum
+      InterEstimation <- NSestimator(as.numeric(rate[j, 
+                                                     ]), maturity, lambdaTemp)
+      BetaCoef <- InterEstimation$Par
+      AIC <- InterEstimation$AIC
+      BIC <- InterEstimation$BIC
+      if (BetaCoef[1] > 0 & BetaCoef[1] < 20) {
+        SSR <- sum(InterEstimation$Res^2)
+        InterResults[i, ] <- c(BetaCoef, lambdaTemp, 
+                               SSR,AIC,BIC)
+      }
+      else {
+        InterResults[i, ] <- c(BetaCoef, lambdaValues[i], 
+                               1e+05,AIC,BIC)
+      }
+    }
+    BestRow <- which.min(InterResults[, 5])
+    FinalResults[j, ] <- InterResults[BestRow,]
+    j <- j + 1
+  }
+  reclass(FinalResults, rate)
+}
+
+###.beta1Spot
+.Beta1Spot <- function (maturity, tau) 
+{
+  as.numeric((1 - exp(-maturity/tau))/(maturity/tau))
+}
+
+###.beta2Spot
+.Beta2Spot <- function (maturity, tau) 
+{
+  as.numeric(((1 - exp(-maturity/tau))/(maturity/tau) - exp(-maturity/tau)))
+}
+
+###.NSS.estimator
+NSSestimator <- function (rate, maturity, tau1, tau2) 
+{
+  beta <- lm(rate ~ 1 + .Beta1Spot(maturity, tau1) + .Beta2Spot(maturity, 
+                                                                tau1) + .Beta2Spot(maturity, tau2))
+  betaPar <- coef(beta)
+  AIC <- AIC(beta)
+  BIC <- BIC(beta)
+  NaValues <- na.omit(betaPar)
+  if (length(NaValues) < 4) 
+    betaPar <- c(0, 0, 0, 0)
+  names(betaPar) <- c("beta_0", "beta_1", "beta_2", 
+                      "beta_3")
+  EstResults <- list(Par = betaPar, Res = resid(beta), AIC = AIC, BIC = BIC)
+  return(EstResults)
+}
+
+
+###Svensson
+NSSFit <- function (rate, maturity) 
+{
+  rate <- try.xts(rate, error = as.matrix)
+  if (ncol(rate) == 1) 
+    rate <- matrix(as.vector(rate), 1, nrow(rate))
+  pillars.number <- length(maturity)
+  Tau1Values <- seq(maturity[1], median(maturity), by = 1)
+  Tau2Values <- seq(median(maturity), maturity[pillars.number], 
+                    by = 1.5)
+  FinalResults <- matrix(0, nrow(rate), 9)
+  FinalResultsTau2 <- matrix(0, length(Tau1Values), 9)
+  colnames(FinalResults) <- c("beta_0", "beta_1", 
+                              "beta_2", "beta_3", "tau1", "tau2", "SSR", "AIC", "BIC")
+  j <- 1
+  while (j <= nrow(rate)) {
+    InterResultsTau1 <- matrix(0, length(Tau1Values), 9)
+    InterResultsTau2 <- matrix(0, length(Tau2Values), 9)
+    for (i in 1:length(Tau1Values)) {
+      Tau1Temp <- optimize(.Beta2Spot, interval = c(0.001, 
+                                                    max(Tau1Values)), maturity = Tau1Values[i], maximum = TRUE)$maximum
+      for (a in 1:length(Tau2Values)) {
+        Tau2Temp <- optimize(.Beta2Spot, interval = c(0.001, 
+                                                      maturity[pillars.number]), maturity = Tau2Values[a], 
+                             maximum = TRUE)$maximum
+        InterEstimation <- NSSestimator(as.numeric(rate[j, 
+                                                        ]), maturity, Tau1Temp, Tau2Temp)
+        BetaCoef <- InterEstimation$Par
+        SSR <- sum(InterEstimation$Res^2)
+        AIC <- InterEstimation$AIC
+        BIC <- InterEstimation$BIC
+        InterResultsTau2[a, ] <- c(BetaCoef, Tau1Temp, 
+                                   Tau2Temp, SSR, AIC, BIC)
+      }
+      BestRowTau2 <- which.min(InterResultsTau2[, 7])
+      FinalResultsTau2[i, ] <- InterResultsTau2[BestRowTau2, ]
+    }
+    BestRow <- which.min(FinalResultsTau2[, 7])
+    FinalResults[j, ] <- FinalResultsTau2[BestRow,]
+    j <- j + 1
+  }
+  reclass(FinalResults, rate)
+}
+```
+
+# 2.2 Fit the NS and NSS Models to the yield data by minimizing the sum of squared errors. Compare the two models using some suitable diagnostics and model selection criteria.
+
+Fitting the NS model
+```{r}
+#  For this dataset, we have 8650 yield curves, 1 for each time period / day. 
+#  Each yield curve is fitted on 30 data points (30 maturities) with their corresponding 30 spot rates
+Maturity = c(1:30)
+head(ZCBYF86.xts)
+# NSParams <- NSFit(rate=ZCBYF86.xts,maturity=Maturity) # for our own nelson siegel function to retrieve SSR, AIC and BIC
+```
+
+Run and load pre-saved parameters.
+```{r}
+# save(NSParams, file = 'NSParams.Rda')
+load(file = 'NSParams.Rda')
+head(NSParams)
+```
+
+Fitting and plotting the yield curve (NS)
+```{r}
+NSyield = NSrates(NSParams, Maturity) 
+head(NSyield)
+
+Dates <- matrix(rev(date))
+
+NSyieldDF <- cbind(Dates, NSyield) %>% 
+  as.data.frame() %>% rename(Date = Dates) %>%
+  mutate(Date = as.Date(Date)) %>% 
+  pivot_longer(cols = -Date,
+               names_to = 'Maturity',
+               values_to = 'NSEstimated') %>% 
+  mutate(Maturity = as.numeric(gsub(pattern = 'X', replacement = '', x = Maturity)))
+
+ObservedYield <- ZCBYF86[nrow(ZCBYF86):1,] %>% 
+  rename(Date = date) %>% 
+  pivot_longer(cols = -Date,
+               names_to = 'Maturity',
+               values_to = 'ObservedYield') %>% 
+  mutate(Maturity = as.numeric(gsub(pattern = 'SVENY', replacement = '', x = Maturity)))
+```
+
+Normal plot
+```{r}
+y.1 = NSyield[1,]
+plot(Maturity,ZCBYF86.xts[1,],main="Fitted Nelson-Siegel yield curve for 1986/01/02",
+xlab=c("Pillars in months"), type="o")
+lines(Maturity,y.1, col=2)
+legend("topleft",legend=c("observed yield curve","fitted yield curve"),
+col=c(1,2),lty=1)
+grid()
+```
+
+#Fitting NSS Model
+Load pre-saved parameters
+```{r}
+# NSSParams = NSSFit(rate=ZCBYF86.xts,maturity=Maturity) # Unhash to 
+# head(NSSParams)
+# save(NSSParams, file = 'NSSParams.Rda')
+load(file = 'NSSParams.Rda')
+NSSyield = Srates(NSSParams, Maturity, whichRate = "Spot") 
+head(NSSyield)
+```
+
+Fit and plot the yield curve (NSS)
+```{r}
+NSSyieldDF <- cbind(Dates,NSSyield) %>% 
+  as.data.frame() %>% rename(Date = Dates) %>%
+  mutate(Date = as.Date(Date)) %>% 
+  pivot_longer(cols = -Date,
+               names_to = 'Maturity',
+               values_to = 'NSSEstimated') %>% 
+  mutate(Maturity = as.numeric(gsub(pattern = 'X', replacement = '', x = Maturity)))
+
+
+
+GGData5 <- cbind(NSyieldDF$NSEstimated,NSSyieldDF$NSSEstimated,ObservedYield) %>% 
+  as.data.frame() %>% 
+  rename(NSEstimated = 'NSyieldDF$NSEstimated', NSSEstimated = 'NSSyieldDF$NSSEstimated')
+
+#NS Fit plot
+p1 <- GGData5 %>% filter(Date == '1986-01-02') %>%  
+  ggplot(aes(x = Maturity, y = ObservedYield)) +
+  geom_point(size = 1.2) +
+  geom_line(mapping = aes(y = NSEstimated, colour = 'NS_Fit'),size = 1) +
+  ggtitle('2nd Jan 1986 Yield Data with NS Model Fit') +
+  labs(x = 'Maturity', y = 'Spot Rate') +
+  theme(legend.position = 'bottom') +
+  scale_colour_manual(name = "Model Fit",
+                      values = c(NS_Fit = 'blue'))
+
+#NSS Fit plot
+p2 <- GGData5 %>% filter(Date == '1986-01-02') %>%  
+  ggplot(aes(x = Maturity, y = ObservedYield)) +
+  geom_point(size = 1.2) +
+  geom_line(mapping = aes(y = NSSEstimated, colour = 'NSS_Fit'),size = 1) +
+  ggtitle('2nd Jan 1986 Yield Data with NSS Model Fit') +
+  labs(x = 'Maturity', y = 'Spot Rate') +
+  theme(legend.position = 'bottom') +
+  scale_colour_manual(name = "Model Fit",
+                      values = c(NSS_Fit = 'red'))
+
+grid.arrange(p1,p2, nrow = 1, ncol = 2)
+
+#Plot with both fit
+GGData5 %>% filter(Date == '1986-01-02') %>%  
+  ggplot(aes(x = Maturity, y = ObservedYield)) +
+  geom_point(size = 1.5) +
+  geom_line(mapping = aes(y = NSEstimated, colour = 'NS_Fit'),size = 1) +
+  geom_line(mapping = aes(y = NSSEstimated, colour = 'NSS_Fit'), size = 1) +
+  ggtitle('2 Jan 1986 Yield Data with NS and NSS Model Fit') +
+  labs(x = 'Maturity', y = 'Spot Rate') +
+  theme(legend.position = 'right') +
+  scale_colour_manual(name = "Model Fit",
+                      values = c(NS_Fit = 'blue', NSS_Fit = 'red'))
+```
+
+#normal plot
+```{r}
+y.2 = NSSyield[1,]
+plot(Maturity,ZCBYF86.xts[1,],main="Fitted Nelson-Siegel-Svensson yield curve for 1986/01/02",
+xlab=c("Pillars in months"), ylim=c(7,12), type="o")
+lines(Maturity,y.2, col=2)
+legend("topleft",legend=c("observed yield curve","fitted yield curve"),
+col=c(1,2),lty=1)
+grid()
+
+```
+
+Choosing best model based on MSE
+```{r}
+# We calculate the  MSE for each model using the entire data set. 
+(NSmse= mean(((NSyield-ZCBYF86.xts)^2)))                   # 0.00229
+(NSSmse = mean(((NSSyield-ZCBYF86.xts)^2)))       # 0.0000644, NSS model is better
+
+## Choosing best model based on BIC
+NSbic = NSParams[,7]
+NSSbic = NSSParams[,9]
+BICdata = cbind(NSbic,NSSbic)
+colnames(BICdata) = c('NS_BIC', 'NSS_BIC'); head(BICdata)
+BICdata$NSScount = ifelse(BICdata$NS_BIC>BICdata$NSS_BIC,1,0); sum(BICdata$NSScount)  # NSS was chosen 8399 out of 8650 times.
+
+```
+
+# 2.3) The changing patterns of the yield curve can be studied through the parameters tetha. 
+#      What information can you extract from the estimates of tetha?
+```{r}
+# NS Model
+NStheta0 = NSParams[,1]
+NStheta1 = NSParams[,2]
+NStheta3 = NSParams[,4]
+NStheta2 = NSParams[,3]*NStheta3
+
+# NSS Model
+NSStheta0 = NSSParams[,1]               
+NSStheta1 = NSSParams[,2]             
+NSStheta3 = 1/NSSParams[,5]             
+NSStheta2 = NSSParams[,3]*NSStheta3        
+NSStheta5 = 1/NSSParams[,6]                 
+NSStheta4 = NSSParams[,4]*NSStheta5
+
+Thetas <- cbind(NStheta0,NStheta1,NStheta2,NStheta3,NSStheta0,NSStheta1,NSStheta2,NSStheta3,
+                NSStheta4,NSStheta5) %>% 
+  as.data.frame()
+
+colnames(Thetas) <- c('NStheta0','NStheta1','NStheta2','NStheta3','NSStheta0','NSStheta1','NSStheta2',
+                      'NSStheta3','NSStheta4','NSStheta5')
+ThetaDF <- cbind(matrix(rev(date)),Thetas) %>% 
+  as.data.frame() %>% rename(Date = 'matrix(rev(date))') %>%
+  mutate(Date = as.Date(Date),
+         NS_theta2theta3 = NStheta2/NStheta3,
+         NSS_theta2theta3 = NSStheta2/NSStheta3,
+         NSS_theta4theta5 = NSStheta4/NSStheta5) %>% 
+  pivot_longer(cols = -Date,
+               names_to = 'Thetas',
+               values_to = 'Value')
+```
+
+GGplot
+```{r}
+#Theta0 plot
+ThetaDF %>% filter(Thetas == 'NStheta0' | Thetas == 'NSStheta0') %>% 
+  ggplot(aes(x = Date, y = Value, group = Thetas, colour = Thetas)) + 
+  geom_line() + 
+  labs(title = 'NSTheta0 vs NSSTheta0 over time')
+
+#Theta1 plot
+ThetaDF %>% filter(Thetas == 'NStheta1' | Thetas == 'NSStheta1') %>% 
+  ggplot(aes(x = Date, y = Value, group = Thetas, colour = Thetas)) + 
+  geom_line() + 
+  labs(title = 'NSTheta1 vs NSSTheta1 over time')
+
+#Theta2/Theta 3 plot
+ThetaDF %>% filter(Thetas == 'NS_theta2theta3' | Thetas == 'NSS_theta2theta3') %>% 
+  ggplot(aes(x = Date, y = Value, group = Thetas, colour = Thetas)) + 
+  geom_line() + 
+  labs(title = 'NS(Theta2/Theta3) vs NSS(Theta2/Theta3) over time')
+
+#Theta3
+ThetaDF %>% filter(Thetas == 'NStheta3' | Thetas == 'NSStheta3') %>% 
+  ggplot(aes(x = Date, y = Value, group = Thetas, colour = Thetas)) + 
+  geom_line() + 
+  labs(title = 'NSTheta3 vs NSSTheta3 over time')
+
+#Theta4/Theta5 (only NSS)
+ThetaDF %>% filter(Thetas == 'NSS_theta4theta5') %>% 
+  ggplot(aes(x = Date, y = Value, colour = Thetas)) + 
+  geom_line() + 
+  labs(title = 'NSS(Theta4/Theta5) over time')
+
+#Theta5 (only NSS)
+ThetaDF %>% filter(Thetas == 'NSStheta5') %>% 
+  ggplot(aes(x = Date, y = Value, colour = Thetas)) + 
+  geom_line() + 
+  labs(title = 'NSSTheta5 over time')
+```
+Tetha0 = level (long term component)
+Tetha1 = Slope (short term component)
+Tetha2/Tetha3 = Curvature (medium term component 1)
+Tetha4/Tetha5 = Curvature (medium term component 2)
+Tetha3 = rate of decay for first medium term
+Tetha5 = rate of decay for second medium term
+
+# 2.4) How may the data tell you about the response of the spot rates at the long end 
+#      with respect to the spot rates at the short end?
+```{r}
+# comparing spot rates of 1 yr and 30 yr maturity
+ZCBYF86 <- as.data.frame(ZCBYF86)
+GGData6 <- cbind(date, ZCBYF86$SVENY01, ZCBYF86$SVENY30) %>% as.data.frame()
+colnames(GGData6) <- c("date", "SVENY01", "SVENY30")
+GGData6 %>% 
+  pivot_longer(cols = -date, 
+               names_to="maturity",
+               values_to = "value") %>% 
+  ggplot(aes(x = date)) + 
+  geom_line(aes(y = value, col = maturity)) + 
+  ggtitle('Spot Rates over Time') +
+  labs(x = 'Time', y = 'Empirical Spot Rate', color="Legend") +
+  theme(legend.position = 'right')
+```
+
+Other plots that were not included in the final report
+```{r}
+# ratio of 1 yr maturity to 30 yr maturity spot rates
+spotrate.ratio <- ZCBYF86$SVENY01/ZCBYF86$SVENY30
+ZCBYF86.ratio <- cbind(ZCBYF86,spotrate.ratio)
+plot(date, spotrate.ratio, type = "l") # idk what to infer from this tho LOL
+
+# gradient of yield curve for 1 yr vs 30 yr maturities
+st.gradient <- NULL
+lt.gradient <- NULL
+for (i in 1:nrow(ZCBYF86)){
+  st.gradient[i] <- (ZCBYF86$SVENY05[i] - ZCBYF86$SVENY01[i])/ZCBYF86$SVENY01[i]
+}
+for (i in 1:nrow(ZCBYF86)){
+  lt.gradient[i] <- (ZCBYF86$SVENY30[i] - ZCBYF86$SVENY25[i])/ZCBYF86$SVENY25[i]
+}
+ZCBYF86.gradient <- cbind(date, st.gradient, lt.gradient)
+ZCBYF86.gradient %>% as.data.frame() %>% 
+  gather(key="term", value="value",-date) %>%
+  ggplot(aes(x=date)) +
+  geom_line(aes(y=value, col = term)) + 
+  ggtitle('Gradient of Yield Curve') +
+  labs(x = 'Time', y = 'Gradient', color = "Legend") +
+  theme(legend.position = 'right')
+```
+
+# 2.5) Forecasting and MSFE
+
+Choosing best model based on MSFE:
+1) Split Dataset into train and testing dataset (test set is August 2020 only, h = 20)
+2) For the training dataset, fit the NS and NSS models and get a dataframe of the parameters (We can use the objects from the ftting that have already been created from above and do step 1 here.)
+
+
+#NS Model
+Load Parameters
+```{r}
+h=20
+NSb0 = NSParams[,1]
+NSb1 = NSParams[,2]
+NSb2 = NSParams[,3]
+NSlambda1 = NSParams[,4]
+
+NSb0.ts = ts(NSb0, start=c(1986,1), frequency=252)
+NSb0.train = NSb0.ts[1:(8650-h),]
+
+NSb1.ts = ts(NSb1, start=c(1986,1), frequency=252)
+NSb1.train = NSb1.ts[1:(8650-h),]
+
+NSb2.ts = ts(NSb2, start=c(1986,1), frequency=252)
+NSb2.train = NSb2.ts[1:(8650-h),]
+
+NSlambda1.ts = ts(NSlambda1, start=c(1986,1), frequency=252)
+NSlambda1.train = NSlambda1.ts[1:(8650-h),]
+
+# 3) Fit an ARIMA model to these parameters individually
+# auto.arima(NSlambda1.train, ic="bic")  # Unhash to run; Find best arima model based on BIC
+NSb0.arima = Arima(NSb0.train,
+                   order=c(2,1,3),
+                   )
+NSb1.arima = Arima(NSb1.train,
+                   order=c(1,1,3),
+                   )
+NSb2.arima = Arima(NSb2.train,
+                   order=c(3,1,5),
+                   )
+NSlambda1.arima = Arima(NSlambda1.train,
+                   order=c(1,1,2),
+                   )
+# 4) Use the Arima  model in step 3 to predict the parameters for the test set
+NSb0.forecast = forecast(NSb0.arima, h=h)
+autoplot(NSb0.forecast) + theme(axis.text.x=element_blank())
+
+NSb1.forecast = forecast(NSb1.arima, h=h)
+autoplot(NSb1.forecast) + theme(axis.text.x=element_blank())
+
+NSb2.forecast = forecast(NSb2.arima, h=h)
+autoplot(NSb2.forecast) + theme(axis.text.x=element_blank())
+
+NSlambda1.forecast = forecast(NSlambda1.arima, h=h)
+autoplot(NSlambda1.forecast) + theme(axis.text.x=element_blank())
+
+# 5) Using the predicted parameters in 4), get the NS and NSS equations for each observation in the test set.
+paramsNS = cbind(NSb0.forecast$mean,NSb1.forecast$mean,NSb2.forecast$mean,NSlambda1.forecast$mean); head(paramsNS)
+
+# 6) Use the NS and NSS equations in 5) to get the spot rates for each ZCB
+NSPredicted = matrix(nrow=h,ncol=30)
+
+# For all the bonds (double for loop - summing cross sectionally first, then summing across time) - can use NSrate() function instead !!!!
+for(i in 1:h)
+{
+  for(j in 1:30)
+  {
+  NSPredicted[i,j] = paramsNS[i,1]+
+    paramsNS[i,2]*((1-exp(-paramsNS[i,4]*j))/(paramsNS[i,4]*j))+
+    paramsNS[i,3]*(((1-exp(-paramsNS[i,4]*j))/(paramsNS[i,4]*j))-exp(-paramsNS[i,4]*j))
+  }
+}
+# NSrates(params.xts, maturity)  # alternative way to predict (faster LOL)
+ZCBYF86.test = as.matrix(ZCBYF86.xts[(8650-h+1):8650,])
+```
+
+
+#NSS Model
+```{r}
+NSSb0 = NSSParams[,1]
+NSSb1 = NSSParams[,2]
+NSSb2 = NSSParams[,3]
+NSSb3 = NSSParams[,4]
+NSStau1 = NSSParams[,5]
+NSStau2 = NSSParams[,6]
+
+NSSb0.ts = ts(NSSb0, start=c(1986,1), frequency=252)
+NSSb0.train = NSSb0.ts[1:(8650-h),]
+
+NSSb1.ts = ts(NSSb1, start=c(1986,1), frequency=252)
+NSSb1.train = NSSb1.ts[1:(8650-h),]
+
+NSSb2.ts = ts(NSSb2, start=c(1986,1), frequency=252)
+NSSb2.train = NSSb2.ts[1:(8650-h),]
+
+NSSb3.ts = ts(NSSb3, start=c(1986,1), frequency=252)
+NSSb3.train = NSSb3.ts[1:(8650-h),]
+
+NSStau1.ts = ts(NSStau1, start=c(1986,1), frequency=252)
+NSStau1.train = NSStau1.ts[1:(8650-h),]
+
+NSStau2.ts = ts(NSStau2, start=c(1986,1), frequency=252)
+NSStau2.train = NSStau2.ts[1:(8650-h),]
+
+# 3) Fit an ARIMA model to these parameters individually
+# auto.arima(NSStau2.train, ic="bic")  # Find best arima model based on BIC
+NSSb0.arima = Arima(NSSb0.train,
+                   order=c(1,1,2),
+                   )
+NSSb1.arima = Arima(NSSb1.train,
+                   order=c(1,1,2),
+                   )
+NSSb2.arima = Arima(NSSb2.train,
+                   order=c(1,1,2),
+                   )
+NSSb3.arima = Arima(NSSb3.train,
+                   order=c(2,1,2),
+                   )
+NSStau1.arima = Arima(NSStau1.train,
+                   order=c(1,1,2),
+                   )
+NSStau2.arima = Arima(NSStau2.train,
+                   order=c(1,1,2),
+                   )
+
+# 4) Use the Arima  model in step 3 to predict the parameters for the test set
+NSSb0.forecast = forecast(NSSb0.arima, h=h)
+autoplot(NSSb0.forecast) + theme(axis.text.x=element_blank())
+
+NSSb1.forecast = forecast(NSSb1.arima, h=h)
+autoplot(NSSb1.forecast) + theme(axis.text.x=element_blank())
+
+NSSb2.forecast = forecast(NSSb2.arima, h=h)
+autoplot(NSSb2.forecast) + theme(axis.text.x=element_blank())
+
+NSSb3.forecast = forecast(NSSb3.arima, h=h)
+autoplot(NSSb3.forecast) + theme(axis.text.x=element_blank())
+
+NSStau1.forecast = forecast(NSStau1.arima, h=h)
+autoplot(NSStau1.forecast) + theme(axis.text.x=element_blank())
+
+NSStau2.forecast = forecast(NSStau2.arima, h=h)
+plot(NSStau2.forecast) + theme(axis.text.x=element_blank())
+
+
+# 5) Using the predicted parameters in 4), get the NS and NSS equations for each observation in the test set.
+paramsNSS = cbind(NSSb0.forecast$mean,NSSb1.forecast$mean,NSSb2.forecast$mean,NSSb3.forecast$mean,NSStau1.forecast$mean,NSStau2.forecast$mean)
+
+# 6) Use the NS and NSS equations in 5) to get the spot rates for each ZCB (use SRates() function instead!!!)
+NSSPredicted = matrix(nrow=h,ncol=30)
+
+for(i in 1:h)
+{
+  for(j in 1:30)
+  {
+ NSSPredicted[i,j] = paramsNSS[i,1]+
+     paramsNSS[i,2]*((1-exp(-j*(1/paramsNSS[i,5])))/(j*(1/paramsNSS[i,5])))+
+     paramsNSS[i,3]*(((1-exp(-j*(1/paramsNSS[i,5])))/(j*(1/paramsNSS[i,5])))-exp(-j*(1/paramsNSS[i,5])))+
+     paramsNSS[i,4]*(((1-exp(-j*(1/paramsNSS[i,6])))/(j*(1/paramsNSS[i,6])))-exp(-j*(1/paramsNSS[i,6])))
+  }
+}
+# can use SRates() function instead!
+head(NSSPredicted)
+```
+
+# 7) Compare the predicted spot rate with the actual spot rate and get MSFE for each model:
+```{r}
+(NSmsfe = mean(((NSPredicted-ZCBYF86.test)^2)))   # 0.009869873
+(NSSmsfe = mean(((NSSPredicted-ZCBYF86.test)^2))) # 0.00351771, NSS model better
+```
+
+# 2.6) Forecasting for September 2020
+```{r}
+
+NSSb0_ts = ts(NSSb0, start=c(1986,1), frequency=252)
+NSSb1_ts = ts(NSSb1, start=c(1986,1), frequency=252)
+NSSb2_ts = ts(NSSb2, start=c(1986,1), frequency=252)
+NSSb3_ts = ts(NSSb3, start=c(1986,1), frequency=252)
+NSStau1_ts = ts(NSStau1, start=c(1986,1), frequency=252)
+NSStau2_ts = ts(NSStau2, start=c(1986,1), frequency=252)
+
+# auto.arima(NSSb1.ts, ic="bic")  # Find best arima model based on BIC
+NSSb0.pred = Arima(NSSb0_ts,
+                   order=c(1,1,2),
+                   )
+NSSb1.pred = Arima(NSSb1_ts,
+                   order=c(1,1,2),
+                   )
+NSSb2.pred = Arima(NSSb2_ts,
+                   order=c(5,1,2),
+                   )
+NSSb3.pred = Arima(NSSb3_ts,
+                   order=c(5,1,1),
+                   )
+NSStau1.pred = Arima(NSStau1_ts,
+                   order=c(5,1,2),
+                   )
+NSStau2.pred = Arima(NSStau2_ts,
+                   order=c(1,1,2),
+                   )
+
+NSSb0_forecast = forecast(NSSb0.pred, h=h)
+NSSb1_forecast = forecast(NSSb1.pred, h=h)
+NSSb2_forecast = forecast(NSSb2.pred, h=h)
+NSSb3_forecast = forecast(NSSb3.pred, h=h)
+NSStau1_forecast = forecast(NSStau1.pred, h=h)
+NSStau2_forecast = forecast(NSStau2.pred, h=h)
+
+paramsPred = cbind(NSSb0_forecast$mean,NSSb1_forecast$mean,NSSb2_forecast$mean,NSSb3_forecast$mean,NSStau1_forecast$mean,NSStau2_forecast$mean)
+
+NSSPredict = matrix(nrow=h,ncol=30)
+
+for(i in 1:h)
+{
+  for(j in 1:30)
+  {
+ NSSPredict[i,j] = paramsPred[i,1]+
+     paramsPred[i,2]*((1-exp(-j*(1/paramsPred[i,5])))/(j*(1/paramsPred[i,5])))+
+     paramsPred[i,3]*(((1-exp(-j*(1/paramsPred[i,5])))/(j*(1/paramsPred[i,5])))-exp(-j*(1/paramsPred[i,5])))+
+     paramsPred[i,4]*(((1-exp(-j*(1/paramsPred[i,6])))/(j*(1/paramsPred[i,6])))-exp(-j*(1/paramsPred[i,6])))
+  }
+}
+View(NSSPredict)
+```
+
+Other plot that was not included in Final report - plotting predicted spot rates for each maturity over time
+```{r}
+nss.predicted.spotrate.ts = ts(NSSPredict)
+nss.predicted.spotrate.xts = ts2xts(NSSPredict)
+par(mar=c(1,1,1,1))
+xyplot.ts(NSSPredict,superpose=TRUE,auto.key=list(columns=6), ylab="Predicted Spot Rates for September 2020")
+```
+
+Plotting
+```{r}
+Sep <- seq(as.Date('2020-09-01'),as.Date('2020-09-30'),by = 1)
+Sep <- Sep[!weekdays(Sep) %in% c('Saturday','Sunday')]
+Sep <- Sep[1:20]
+
+GGDataForecast <- cbind(NSSPredicted,Sep) %>% as.data.frame() %>% mutate(Sep = as.Date(Sep)) %>% pivot_longer(cols = -Sep, names_to = 'Maturity', values_to = 'SpotRateValue') %>% mutate(Maturity = as.numeric(gsub(x = Maturity, pattern = 'V', replacement = '')))
+head(GGDataForecast)
+
+#plot by maturity
+GGDataForecast %>% filter(Maturity == 1) %>% 
+  ggplot(aes(x=Sep, y = SpotRateValue)) + 
+  geom_point() + geom_line() + 
+  labs(title = 'Predicted 1-Year Maturity Spot Rate for September 2020', y = 'Predicted Spot Rate')
+
+GGDataForecast %>% filter(Maturity == 30) %>% 
+  ggplot(aes(x=Sep, y = SpotRateValue)) + 
+  geom_point() + geom_line() + 
+  labs(title = 'Predicted 30-Year Maturity Spot Rate for September 2020', y = 'Predicted Spot Rate')
+
+#plot both
+GGDataForecast %>% filter(Maturity == 1 | Maturity == 30) %>% 
+  mutate(Maturity = as.factor(Maturity)) %>% 
+  ggplot(aes(x = Sep, y = SpotRateValue, group = Maturity, colour = Maturity)) + 
+  geom_point() + geom_line() + 
+  labs(title = 'Predicted 30-Year Maturity Spot Rate for September 2020', y = 'Predicted Spot Rate')
+
+hist3D(x = c(1:20), y = c(1:30), z = NSSPredict, xlab = 'September Dates', ylab = 'Maturity', zlab = 'Predicted Spot Rates', main = 'Predicted Spot Rates based on Maturity for September 2020', theta = 45, phi = 2, border = 'black', scale = TRUE)
+
+persp3D(x = c(1:20), y = c(1:30), z = NSSPredict, xlab = 'September Dates', ylab = 'Maturity', zlab = 'Predicted Spot Rates', theta = 45, phi = 2, border = 'black', main = 'Predicted Spot Rates based on Maturity for September 2020', scale = TRUE, curtain = TRUE)
+
+plotrgl() #run this line to generate an interactive 3D plot
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
